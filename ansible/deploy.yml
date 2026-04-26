@@ -185,6 +185,21 @@
         - { src: '../Dockerfile.frontend', dest: 'Dockerfile.frontend' }
         - { src: '../Dockerfile.backend',  dest: 'Dockerfile.backend'  }
 
+    - name: "[13b/17] Create app .env file"
+      copy:
+        dest: "{{ app_dir }}/.env"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+        content: |
+          PORT=8000
+          DB_HOST=backend-db
+          DB_PORT=5432
+          DB_USER=postgres
+          DB_PASSWORD=postgres
+          DB_NAME=medical_dashboard
+          JWT_SECRET=change-this-secret
+
     # ── 14: Stop existing containers ────────────────────────────────
     # BUG FIXED: use docker compose v2 plugin syntax
     - name: "[14/17] Stop existing containers"
