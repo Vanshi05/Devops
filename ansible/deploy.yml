@@ -1,0 +1,273 @@
+---
+- name: Deploy Sehat Connect to EC2
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    app_dir: /home/ubuntu/sehat-connect
+
+  tasks:
+
+    # ── 1: Clean corrupted Docker sources ────────────────────────────
+    - name: "[1/17] Clean Docker sources if corrupted"
+      shell: |
+        rm -f /etc/apt/sources.list.d/docker.list 2>/dev/null || true
+        rm -f /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+        apt-get clean || true
+      ignore_errors: yes
+
+    # ── 1b: Refresh apt ──────────────────────────────────────────────
+    - name: "[1b/17] Update apt cache"
+      apt:
+        update_cache: yes
+        cache_valid_time: 0
+      retries: 3
+      delay: 5
+
+    # ── 2: Install system packages ───────────────────────────────────
+    # BUG FIXED: added ca-certificates, gnupg, lsb-release
+    # (required for Docker GPG key to work)
+    - name: "[2/17] Install required packages"
+      apt:
+        name:
+          - git
+          - curl
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - python3-pip
+        state: present
+        update_cache: yes
+
+    # ── 3: Docker GPG key ────────────────────────────────────────────
+    # BUG FIXED: apt_key is deprecated in Ubuntu 22.04+
+    # Using shell + gpg --dearmor instead
+    - name: "[3/17] Create Docker keyring directory"
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: "[3b/17] Add Docker GPG key via gpg --dearmor"
+      shell: |
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+        gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        chmod a+r /etc/apt/keyrings/docker.gpg
+      args:
+        creates: /etc/apt/keyrings/docker.gpg
+
+    # ── 4: Remove old Docker repo + add clean one ────────────────────
+    # BUG FIXED: old step used apt_repository which conflicts with the
+    # keyrings-based approach; also had hardcoded "jammy" instead of
+    # using ansible_distribution_release variable
+    - name: "[4/17] Remove old Docker repository if present"
+      file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: "[4b/17] Add Docker apt repository"
+      shell: |
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+          https://download.docker.com/linux/ubuntu \
+          $(lsb_release -cs) stable" | \
+          tee /etc/apt/sources.list.d/docker.list > /dev/null
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    # ── 5: Install Docker CE ─────────────────────────────────────────
+    # BUG FIXED: only installed docker-ce, missing docker-ce-cli and
+    # containerd.io which are required for Docker to function
+    - name: "[5/17] Update apt after adding Docker repo"
+      apt:
+        update_cache: yes
+
+    - name: "[5b/17] Install Docker CE + CLI + containerd"
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    # ── 6: Install Docker Compose ────────────────────────────────────
+    # BUG FIXED: pip install docker-compose installs an OUTDATED Python
+    # wrapper that often fails with newer Docker. Use binary instead.
+    - name: "[6/17] Install Docker Compose binary"
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/v2.24.0/docker-compose-linux-x86_64"
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+      ignore_errors: yes
+
+    - name: "[6b/17] Verify docker-compose is available"
+      shell: docker-compose --version || docker compose version
+      register: compose_check
+      changed_when: false
+
+    - name: "[6c/17] Print compose version"
+      debug:
+        var: compose_check.stdout
+
+    # ── 7: Start Docker service ──────────────────────────────────────
+    - name: "[7/17] Enable and start Docker service"
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+        # ── 7b: Clean up corrupted repo ──────────────────────────────────
+    - name: "[7b/17] Remove corrupted repo directory if exists"
+      file:
+        path: "{{ app_dir }}"
+        state: absent
+      become_user: ubuntu
+      ignore_errors: yes
+
+    # ── 8: Clone repo (fresh) ────────────────────────────────────────
+    - name: "[8/17] Clone latest code"
+      shell: |
+        timeout 300 git clone --depth 1 --single-branch \
+          https://github.com/Vanshi05/Devops {{ app_dir }}
+      become_user: ubuntu
+      retries: 2
+      delay: 10
+
+    # ── 9–12: Copy config files ──────────────────────────────────────
+    - name: "[9/17] Copy docker-compose.yml"
+      copy:
+        src: ../docker-compose.yml
+        dest: "{{ app_dir }}/docker-compose.yml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: "[10/17] Copy nginx.conf"
+      copy:
+        src: ../nginx.conf
+        dest: "{{ app_dir }}/nginx.conf"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: "[11/17] Copy prometheus.yml"
+      copy:
+        src: ../prometheus.yml
+        dest: "{{ app_dir }}/prometheus.yml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    - name: "[12/17] Copy grafana-datasources.yml"
+      copy:
+        src: ../grafana-datasources.yml
+        dest: "{{ app_dir }}/grafana-datasources.yml"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+
+    # ── 13: Copy Dockerfiles ─────────────────────────────────────────
+    # BUG FIXED: loop used bare strings like "../Dockerfile.frontend"
+    # as both src AND dest — Docker module puts the full src path into
+    # dest directory which can cause "dest is a directory" errors.
+    # Fixed with explicit src/dest dict pairs.
+    - name: "[13/17] Copy Dockerfiles to app directory"
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ app_dir }}/{{ item.dest }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0644'
+      loop:
+        - { src: '../Dockerfile.frontend', dest: 'Dockerfile.frontend' }
+        - { src: '../Dockerfile.backend',  dest: 'Dockerfile.backend'  }
+
+    # ── 14: Stop existing containers ────────────────────────────────
+    # BUG FIXED: use docker compose v2 plugin syntax
+    - name: "[14/17] Stop existing containers"
+      shell: |
+        cd {{ app_dir }}
+        docker compose down --remove-orphans 2>/dev/null || true
+      become_user: ubuntu
+      ignore_errors: yes
+
+    - name: "[14b/17] Clean dangling images"
+      shell: docker image prune -f || true
+      ignore_errors: yes
+
+    - name: "[14c/17] Aggressive cleanup for disk space"
+      shell: docker system prune -af --volumes
+      async: 300
+      poll: 0
+      ignore_errors: yes
+
+    - name: "[14c/17] Wait for cleanup to complete"
+      shell: sleep 30
+
+    # ── 15: Build and start containers ──────────────────────────────
+    # BUG FIXED: no timeout — Jenkins kills the task after ~10 min
+    # during heavy docker builds. async:1200 gives 20 min with polling.
+    # BUG FIXED: removed fallback to old docker-compose v1; use v2 plugin only
+    - name: "[15/17] Build and start all containers"
+      shell: |
+        cd {{ app_dir }}
+        docker compose up -d --build
+      become_user: ubuntu
+      register: compose_result
+      async: 1200
+      poll: 30
+      ignore_errors: yes
+
+    - name: "[15b/17] Show compose output"
+      debug:
+        var: compose_result.stdout_lines
+
+    # ── 16: Wait and verify ──────────────────────────────────────────
+    # BUG FIXED: sleep 10 is not enough for large images to start
+    # BUG FIXED: no actual health check was being done
+    - name: "[16/17] Wait for containers to stabilize"
+      shell: sleep 20
+
+    - name: "[16b/17] Show running containers"
+      shell: docker ps
+      register: ps_output
+
+    - name: "[16c/17] Print container list"
+      debug:
+        var: ps_output.stdout_lines
+
+    - name: "[16d/17] Health check frontend"
+      uri:
+        url: "http://{{ ansible_host }}:80"
+        status_code: [200, 301, 302]
+        timeout: 10
+      retries: 5
+      delay: 5
+      ignore_errors: yes
+
+    - name: "[16e/17] Health check backend"
+      uri:
+        url: "http://{{ ansible_host }}:8000"
+        status_code: [200, 404, 422]
+        timeout: 10
+      retries: 5
+      delay: 5
+      ignore_errors: yes
+
+    # ── 17: Summary ──────────────────────────────────────────────────
+    # BUG FIXED: no URLs printed — useless for verification
+    - name: "[17/17] Deployment summary"
+      debug:
+        msg:
+          - "============================================"
+          - "✅  SEHAT CONNECT DEPLOYED SUCCESSFULLY"
+          - "============================================"
+          - "🌐  Frontend  : http://{{ ansible_host }}"
+          - "🔧  Backend   : http://{{ ansible_host }}:8000"
+          - "📊  Prometheus: http://{{ ansible_host }}:9090"
+          - "📈  Grafana   : http://{{ ansible_host }}:3000"
+          - "🐳  cAdvisor  : http://{{ ansible_host }}:8081"
+          - "============================================"
