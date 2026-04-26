@@ -3,6 +3,7 @@ require('express-async-errors');
 const express = require('express');
 const cors = require('cors');
 const { Pool } = require('pg');
+const initializeDatabase = require('./config/dbInit');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -20,29 +21,39 @@ const pool = new Pool({
 
 global.db = pool;
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'Server is running' });
-});
+// Initialize database schema on startup
+initializeDatabase(pool)
+  .then(() => {
+    console.log('✅ Database ready, starting server...');
 
-app.use('/auth', require('./routes/authRoutes'));
-app.use('/patients', require('./routes/patientRoutes'));
-app.use('/prescriptions', require('./routes/prescriptionRoutes'));
-app.use('/appointments', require('./routes/appointmentRoutes'));
-app.use('/admin', require('./routes/adminRoutes'));
+    app.get('/health', (req, res) => {
+      res.json({ status: 'Server is running' });
+    });
 
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(err.status || 500).json({
-    error: err.message || 'Internal server error',
+    app.use('/auth', require('./routes/authRoutes'));
+    app.use('/patients', require('./routes/patientRoutes'));
+    app.use('/prescriptions', require('./routes/prescriptionRoutes'));
+    app.use('/appointments', require('./routes/appointmentRoutes'));
+    app.use('/admin', require('./routes/adminRoutes'));
+
+    app.use((err, req, res, next) => {
+      console.error(err.stack);
+      res.status(err.status || 500).json({
+        error: err.message || 'Internal server error',
+      });
+    });
+
+    pool.on('error', (err) => {
+      console.error('Unexpected error on idle client', err);
+    });
+
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('❌ Failed to initialize database:', err);
+    process.exit(1);
   });
-});
-
-pool.on('error', (err) => {
-  console.error('Unexpected error on idle client', err);
-});
-
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
 
 module.exports = app;
