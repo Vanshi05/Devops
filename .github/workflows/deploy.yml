@@ -69,8 +69,20 @@ jobs:
       - name: Smoke test frontend container
         run: |
           docker run -d --name test-frontend -p 80:80 sehat-frontend:latest
-          sleep 5
-          curl -f http://localhost:80
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:80 >/dev/null; then
+              echo "✅ Frontend container healthy"
+              break
+            fi
+            echo "Waiting for frontend to respond... ($i/20)"
+            sleep 3
+          done
+          if ! curl -fsS http://localhost:80 >/dev/null; then
+            echo "Frontend container logs:"
+            docker logs test-frontend || true
+            docker ps -a || true
+            exit 1
+          fi
           docker rm -f test-frontend
 
       - name: Smoke test backend container
