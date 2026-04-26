@@ -1,4 +1,4 @@
-name: Sehat Connect — CI/CD Pipeline
+name: Sehat Connect CI/CD Pipeline
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   test:
-    name: Test & Lint
+    name: Test and Lint
     runs-on: ubuntu-latest
 
     steps:
@@ -21,43 +21,32 @@ jobs:
         with:
           node-version: '18'
           cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: ./backend
+        run: npm ci || npm install
+
+      - name: Run backend tests
+        working-directory: ./backend
+        run: npm test -- --passWithNoTests
+
+      - name: Check backend files
+        run: |
+          test -f backend/package.json
+          test -f backend/src/server.js
+          test -d backend/src/routes
+          echo "Backend structure OK"
 
       - name: Install frontend dependencies
         working-directory: ./frontend
         run: npm ci --legacy-peer-deps || npm install --legacy-peer-deps
 
-      - name: Check frontend files
-        run: |
-          echo "Checking frontend files..."
-          test -f frontend/package.json        && echo "✅ frontend/package.json"
-          test -f frontend/index.html          && echo "✅ frontend/index.html"
-          test -f frontend/vite.config.ts      && echo "✅ frontend/vite.config.ts"
-          echo "Frontend files OK ✅"
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Check backend files
-        run: |
-          echo "Checking backend files..."
-          test -f backend/package.json         && echo "✅ backend/package.json"
-          test -f backend/main.py              && echo "✅ backend/main.py"
-          test -f backend/requirements.txt     && echo "✅ backend/requirements.txt"
-          echo "Backend files OK ✅"
-
-      - name: Install backend dependencies
-        working-directory: ./backend
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt || pip install fastapi uvicorn
-
-      - name: Check Python syntax
-        working-directory: ./backend
-        run: |
-          python3 -m py_compile main.py && echo "✅ main.py syntax OK"
+      - name: Build frontend
+        working-directory: ./frontend
+        run: npm run build
 
   build:
     name: Build Docker Images
@@ -71,49 +60,28 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Frontend Docker image
-        run: |
-          echo "Building frontend..."
-          docker build \
-            -f Dockerfile.frontend \
-            -t sehat-frontend:${{ github.sha }} \
-            -t sehat-frontend:latest \
-            .
-          echo "✅ Frontend image built"
+      - name: Build frontend image
+        run: docker build -f Dockerfile.frontend -t sehat-frontend:${{ github.sha }} -t sehat-frontend:latest .
 
-      - name: Build Backend Docker image
-        run: |
-          echo "Building backend..."
-          docker build \
-            -f Dockerfile.backend \
-            -t sehat-backend:${{ github.sha }} \
-            -t sehat-backend:latest \
-            .
-          echo "✅ Backend image built"
+      - name: Build backend image
+        run: docker build -f Dockerfile.backend -t sehat-backend:${{ github.sha }} -t sehat-backend:latest .
 
-      - name: Verify images exist
-        run: |
-          docker images | grep sehat
-          echo "✅ Both images built successfully"
-
-      - name: Test frontend container starts
+      - name: Smoke test frontend container
         run: |
           docker run -d --name test-frontend -p 80:80 sehat-frontend:latest
           sleep 5
-          curl -f http://localhost:80 && echo "✅ Frontend container healthy" || echo "Frontend started"
-          docker stop test-frontend
-          docker rm test-frontend
+          curl -f http://localhost:80
+          docker rm -f test-frontend
 
-      - name: Test backend container starts
+      - name: Smoke test backend container
         run: |
           docker run -d --name test-backend -p 8000:8000 sehat-backend:latest
-          sleep 10
-          curl -f http://localhost:8000 && echo "✅ Backend container healthy" || echo "Backend started"
-          docker stop test-backend
-          docker rm test-backend
+          sleep 8
+          curl -f http://localhost:8000/health || curl -f http://localhost:8000
+          docker rm -f test-backend
 
   deploy:
-    name: Deploy to EC2 (Ansible)
+    name: Deploy to EC2 with Ansible
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -128,62 +96,25 @@ jobs:
           sudo apt-get install -y ansible
           ansible --version
 
-      - name: Setup SSH key for EC2
+      - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key.pem
           chmod 400 ~/.ssh/ec2_key.pem
-          echo "✅ SSH key configured"
 
-      - name: Create Ansible inventory
+      - name: Create inventory
         run: |
-          cat > ansible/inventory.ini << INVEOF
+          cat > ansible/inventory.ini <<INVEOF
           [ec2]
           ${{ secrets.EC2_PUBLIC_IP }} ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/ec2_key.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
           [ec2:vars]
           ansible_python_interpreter=/usr/bin/python3
           INVEOF
-          echo "✅ Inventory created for IP: ${{ secrets.EC2_PUBLIC_IP }}"
 
-      - name: Test SSH connection to EC2
-        run: |
-          ssh -i ~/.ssh/ec2_key.pem \
-            -o StrictHostKeyChecking=no \
-            ubuntu@${{ secrets.EC2_PUBLIC_IP }} \
-            "echo '✅ SSH connection successful' && docker --version"
-
-      - name: Run Ansible deploy playbook
+      - name: Run deploy playbook
         run: |
           cd ansible
-          ansible-playbook \
-            -i inventory.ini \
-            deploy.yml \
-            -v
+          ansible-playbook -i inventory.ini deploy.yml -v
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
-
-      - name: Final health check
-        run: |
-          sleep 15
-          echo "Checking frontend..."
-          curl -f http://${{ secrets.EC2_PUBLIC_IP }}:80 && echo "✅ Frontend UP" || echo "Frontend starting..."
-          echo "Checking backend..."
-          curl -f http://${{ secrets.EC2_PUBLIC_IP }}:8000 && echo "✅ Backend UP" || echo "Backend responding..."
-          echo "Checking Prometheus..."
-          curl -f http://${{ secrets.EC2_PUBLIC_IP }}:9090 && echo "✅ Prometheus UP" || echo "Prometheus starting..."
-          echo "Checking Grafana..."
-          curl -f http://${{ secrets.EC2_PUBLIC_IP }}:3000 && echo "✅ Grafana UP" || echo "Grafana starting..."
-
-      - name: Print deployment summary
-        run: |
-          echo ""
-          echo "════════════════════════════════════════════"
-          echo "  ✅ DEPLOYMENT SUCCESSFUL"
-          echo ""
-          echo "  🌐 App       : http://${{ secrets.EC2_PUBLIC_IP }}"
-          echo "  🔧 API       : http://${{ secrets.EC2_PUBLIC_IP }}:8000"
-          echo "  📊 Grafana   : http://${{ secrets.EC2_PUBLIC_IP }}:3000"
-          echo "  🔍 Prometheus: http://${{ secrets.EC2_PUBLIC_IP }}:9090"
-          echo "  🏗  Commit    : ${{ github.sha }}"
-          echo "════════════════════════════════════════════"
