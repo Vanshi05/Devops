@@ -1,4 +1,4 @@
-# ── Stage 1: Build React/Vite App ────────────────────────────────────────────
+# ── Stage 1: Build React App ─────────────────────────────────────────────────
 FROM node:18-alpine AS builder
 
 WORKDIR /app
@@ -6,16 +6,13 @@ WORKDIR /app
 # Copy package files first for layer caching
 COPY frontend/package.json frontend/package-lock.json ./
 
-# Install with legacy peer deps (required for this project's dep tree)
+# Install dependencies
 RUN npm ci --legacy-peer-deps
 
-# Copy all source files
+# Copy frontend source tree
 COPY frontend/. .
 
-# Remove any existing node_modules/.vite cache that could conflict
-RUN rm -rf node_modules/.vite
-
-# Build the app — outputs to /app/dist
+# Build the app — CRA outputs to /app/build
 RUN npm run build
 
 # ── Stage 2: Serve with nginx ─────────────────────────────────────────────────
@@ -25,7 +22,7 @@ FROM nginx:1.25-alpine
 RUN rm -rf /usr/share/nginx/html/*
 
 # Copy built React app
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder /app/build /usr/share/nginx/html
 
 # Copy nginx config (handles React Router)
 COPY nginx.conf /etc/nginx/conf.d/default.conf
