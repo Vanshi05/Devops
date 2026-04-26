@@ -14,6 +14,7 @@ function PatientDashboard() {
 
   const patientId = parseInt(localStorage.getItem('patientId')) || parseInt(localStorage.getItem('userId'));
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     fetchInitialData();
   }, []);
