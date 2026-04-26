@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { patientService, appointmentService, prescriptionService } from '../services/api';
 import './Dashboard.css';
 
@@ -14,12 +14,7 @@ function PatientDashboard() {
 
   const patientId = parseInt(localStorage.getItem('patientId')) || parseInt(localStorage.getItem('userId'));
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    fetchInitialData();
-  }, []);
-
-  const fetchInitialData = async () => {
+  const fetchInitialData = useCallback(async () => {
     setLoading(true);
     try {
       if (!patientId) {
@@ -47,7 +42,11 @@ function PatientDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [patientId]);
+
+  useEffect(() => {
+    fetchInitialData();
+  }, [fetchInitialData]);
 
   const handleScheduleAppointment = async (e) => {
     e.preventDefault();

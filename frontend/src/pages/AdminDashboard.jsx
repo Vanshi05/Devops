@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { adminService } from '../services/api';
 import './Dashboard.css';
 
@@ -13,13 +13,7 @@ function AdminDashboard() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddUser, setShowAddUser] = useState(false);
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    fetchStatistics();
-    fetchPatients();
-  }, []);
-
-  const fetchStatistics = async () => {
+  const fetchStatistics = useCallback(async () => {
     setLoading(true);
     try {
       const response = await adminService.getStatistics();
@@ -29,19 +23,19 @@ function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  const fetchPatients = async () => {
+  const fetchPatients = useCallback(async (term = '') => {
     setLoading(true);
     try {
-      const response = await adminService.getPatients(20, 0, searchTerm);
+      const response = await adminService.getPatients(20, 0, term);
       setPatients(response.data);
     } catch (err) {
       setError('Failed to load patients');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   const fetchReports = async () => {
     setLoading(true);
@@ -55,9 +49,14 @@ function AdminDashboard() {
     }
   };
 
+  useEffect(() => {
+    fetchStatistics();
+    fetchPatients('');
+  }, [fetchStatistics, fetchPatients]);
+
   const handleSearch = (e) => {
     e.preventDefault();
-    fetchPatients();
+    fetchPatients(searchTerm);
   };
 
   const handleAddUser = async (e) => {
@@ -107,7 +106,7 @@ function AdminDashboard() {
             className={`tab-btn ${activeTab === 'patients' ? 'active' : ''}`}
             onClick={() => {
               setActiveTab('patients');
-              fetchPatients();
+              fetchPatients(searchTerm);
             }}
           >
             Patients
