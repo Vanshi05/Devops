@@ -70,7 +70,40 @@ jobs:
         run: |
           docker network create sehat-net || true
 
-          docker run -d             --name backend             --network sehat-net             -p 8000:8000             sehat-backend:latest
+          docker run -d \
+            --name postgres \
+            --network sehat-net \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_DB=medical_dashboard \
+            postgres:15-alpine
+
+          for i in $(seq 1 20); do
+            if docker exec postgres pg_isready -U postgres >/dev/null 2>&1; then
+              echo "✅ PostgreSQL container healthy"
+              break
+            fi
+            echo "Waiting for PostgreSQL to respond... ($i/20)"
+            sleep 3
+          done
+
+          if ! docker exec postgres pg_isready -U postgres >/dev/null 2>&1; then
+            echo "PostgreSQL container logs:"
+            docker logs postgres || true
+            docker ps -a || true
+            exit 1
+          fi
+
+          docker run -d \
+            --name backend \
+            --network sehat-net \
+            -p 8000:8000 \
+            -e DB_HOST=postgres \
+            -e DB_USER=postgres \
+            -e DB_PASSWORD=postgres \
+            -e DB_NAME=medical_dashboard \
+            -e DB_PORT=5432 \
+            sehat-backend:latest
 
           docker run -d             --name frontend             --network sehat-net             -p 80:80             sehat-frontend:latest
 
@@ -88,12 +121,14 @@ jobs:
             docker logs frontend || true
             echo "Backend container logs:"
             docker logs backend || true
+            echo "PostgreSQL container logs:"
+            docker logs postgres || true
             docker ps -a || true
             exit 1
           fi
 
           curl -fsS http://localhost:8000/health || curl -fsS http://localhost:8000
-          docker rm -f frontend backend
+          docker rm -f frontend backend postgres
           docker network rm sehat-net || true
 
   deploy:
